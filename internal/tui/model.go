@@ -118,9 +118,13 @@ func (m model) View() tea.View {
 	s += "\nPress q to quit.\n"
 
 	// Send the UI for rendering
-	return tea.NewView(s)
+	v := tea.NewView(s)
+	v.AltScreen = true
+	return v
 }
 
+// Create a Cmd that will send a Msg of type webhook.Data after the webserver
+// receives a webhook request
 func (m model) waitForWebhook() tea.Cmd {
 	return func() tea.Msg {
 		log.Printf("waiting for webhook...")

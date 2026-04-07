@@ -18,7 +18,7 @@ type Data struct {
 	ButtonId  uint
 }
 
-// Start a webserver to listen for webhooks.
+// Start an HTTP server to listen for webhooks.
 //
 // This function will block indefinitely, so it should be run in a goroutine.
 func StartListening(addr string, webhookId string, webhookCh chan<- Data) {

@@ -5,6 +5,7 @@ import (
 	"os"
 
 	tea "charm.land/bubbletea/v2"
+	config "github.com/eamonburns/gameshow-button-dashboard/internal/config"
 	"github.com/eamonburns/gameshow-button-dashboard/internal/tui"
 	"github.com/eamonburns/gameshow-button-dashboard/internal/webhook"
 )
@@ -12,10 +13,17 @@ import (
 func main() {
 	logFile, err := tea.LogToFile("buttons.log", "debug")
 	if err != nil {
-		log.Fatalf("unable to open log file: %v\n", err)
+		log.Fatalf("error: unable to open log file: %v\n", err)
 	}
 	defer logFile.Close()
 	log.Println("Starting thing")
+
+	configPath := "config.json"
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		log.Fatalf("error: unable to load config from '%s': %v\n", configPath, err)
+	}
+	log.Printf("Config: %+v\n", cfg)
 
 	webhookId := os.Getenv("WEBHOOK_ID")
 	if webhookId == "" {
