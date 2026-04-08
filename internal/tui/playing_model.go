@@ -15,23 +15,26 @@ import (
 	"github.com/eamonburns/gameshow-button-dashboard/internal/webhook"
 )
 
-type playingKeymap struct {
+type keymap struct {
 	Quit            key.Binding
+	FinishReading   key.Binding
 	CorrectAnswer   key.Binding
 	IncorrectAnswer key.Binding
 }
 
-func (k playingKeymap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Quit, k.CorrectAnswer, k.IncorrectAnswer}
+func (k keymap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Quit, k.FinishReading, k.CorrectAnswer, k.IncorrectAnswer}
 }
 
-func (k playingKeymap) FullHelp() [][]key.Binding {
+func (k keymap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{k.ShortHelp()}
 }
 
-type playingModel struct {
+type model struct {
 	cfg       *config.Config
 	webhookCh <-chan webhook.Data
+
+	reading bool
 
 	// The player that is currently answering the question
 	// `nil` if waiting for a player to buzz-in
@@ -40,53 +43,40 @@ type playingModel struct {
 	// Players that have buzzed in are added to this "set"
 	buzzedIn map[*config.Player]struct{}
 
-	keymap playingKeymap
+	keymap keymap
 	help   help.Model
 }
 
-// Create a new playingModel and also a tea.Cmd to wait for buzzer presses
-func newPlayingModel(cfg *config.Config, webhookCh <-chan webhook.Data) (playingModel, tea.Cmd) {
-	m := playingModel{
-		cfg:       cfg,
-		webhookCh: webhookCh,
-		buzzedIn:  make(map[*config.Player]struct{}),
-		keymap: playingKeymap{
-			Quit: key.NewBinding(
-				key.WithKeys("q", "ctrl+c"),
-				key.WithHelp("q", "quit"),
-			),
-			CorrectAnswer: key.NewBinding(
-				key.WithKeys("enter"),
-				key.WithHelp("enter", "accept answer"),
-				key.WithDisabled(), // Will be enabled when a player has buzzed in
-			),
-			IncorrectAnswer: key.NewBinding(
-				key.WithKeys("backspace"),
-				key.WithHelp("backspace", "reject answer"),
-				key.WithDisabled(), // Will be enabled when a player has buzzed in
-			),
-		},
-		help: help.New(),
-	}
-	return m, m.waitForBuzzer()
-}
-
 // Create a Cmd that will send a Msg of type webhook.Data after the webserver
-// receives a buzzer webhook request
-func (m playingModel) waitForBuzzer() tea.Cmd {
-	return func() tea.Msg {
-		log.Printf("waiting for buzzer...")
+// receives a buzzer webhook request, and a new Model that is ready to recieve
+// the webhook.Data message
+func (m model) waitForBuzzer() (tea.Model, tea.Cmd) {
+	m.reading = false
+	m.playerAnswering = nil
+	m.keymap.FinishReading.SetEnabled(false)
+	m.keymap.CorrectAnswer.SetEnabled(false)
+	m.keymap.IncorrectAnswer.SetEnabled(false)
+	return m, func() tea.Msg {
+		log.Println("waiting for buzzer...")
 		data := <-m.webhookCh
-		log.Printf("got webhook data")
+		log.Println("got webhook data")
 		return data
 	}
 }
 
-func (m playingModel) Init() tea.Cmd {
+func (m model) startReading() (tea.Model, tea.Cmd) {
+	m.reading = true
+	m.keymap.FinishReading.SetEnabled(true)
+	m.keymap.CorrectAnswer.SetEnabled(false)
+	m.keymap.IncorrectAnswer.SetEnabled(false)
+	return m, nil
+}
+
+func (m model) Init() tea.Cmd {
 	return nil
 }
 
-func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case timer.TickMsg:
 		var cmd tea.Cmd
@@ -101,6 +91,10 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keymap.Quit):
 			return m, tea.Quit
 
+		case key.Matches(msg, m.keymap.FinishReading):
+			m.buzzedIn = make(map[*config.Player]struct{}, len(m.cfg.Players))
+			return m.waitForBuzzer()
+
 		case key.Matches(msg, m.keymap.CorrectAnswer):
 			if m.playerAnswering == nil {
 				log.Printf("error: this 'CorrectAnswer' keymap matched while player isn't buzzed-in")
@@ -109,10 +103,7 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Answer was correct, go back to reading a clue
 			log.Printf("'%s' answered correctly", m.playerAnswering.Name)
-			return readingModel{
-				cfg:       m.cfg,
-				webhookCh: m.webhookCh,
-			}, nil
+			return m.startReading()
 
 		case key.Matches(msg, m.keymap.IncorrectAnswer):
 			if m.playerAnswering == nil {
@@ -130,16 +121,17 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if allBuzzedIn {
 				log.Println("All players answered incorrectly")
-				return readingModel{
-					cfg:       m.cfg,
-					webhookCh: m.webhookCh,
-				}, nil
+				return m.startReading()
 			} else {
+				// FIXME: There is a possibility that the last player could
+				// just answer the question without buzzing in, because they
+				// don't have anyone to race for the answer. There isn't
+				// currently a way to override the behavior of having to
+				// buzz-in before being able to move on, so in that case they
+				// would have to buzz-in after already answering the question
+				// and the host would have to accept/reject their answer
 				log.Println("Some players have not buzzed in yet")
-				m.playerAnswering = nil
-				m.keymap.CorrectAnswer.SetEnabled(false)
-				m.keymap.IncorrectAnswer.SetEnabled(false)
-				return m, m.waitForBuzzer()
+				return m.waitForBuzzer()
 			}
 		}
 
@@ -151,7 +143,7 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if _, buzzedIn := m.buzzedIn[player]; buzzedIn {
 			log.Printf("player has already buzzed in: %+v", player)
-			return m, m.waitForBuzzer()
+			return m.waitForBuzzer()
 		}
 		log.Printf("Player buzzed in: %+v", player)
 		m.playerAnswering = player
@@ -168,30 +160,39 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m playingModel) View() tea.View {
+func (m model) View() tea.View {
 	var s strings.Builder
-	fmt.Fprint(&s, "Players:\n")
-	for i, player := range m.cfg.Players {
-		fmt.Fprintf(&s, "%d. %s", i+1, player.Name)
-		if player == m.playerAnswering {
-			fmt.Fprint(&s, " (answering)\n")
-		} else if _, buzzedIn := m.buzzedIn[player]; buzzedIn {
-			fmt.Fprint(&s, " (buzzed-in)\n")
-		} else {
-			fmt.Fprint(&s, "\n")
-		}
-	}
-	fmt.Fprint(&s, "\n")
 
-	if m.playerAnswering == nil {
-		fmt.Fprint(&s, "Waiting for buzzer...\n")
-	} else if m.answerTimer.Timedout() {
-		fmt.Fprintf(&s, "'%s' is answering (timed out)\n", m.playerAnswering.Name)
+	if m.reading {
+		// Reading clue
+		fmt.Fprint(&s, "Reading clue...\n")
 	} else {
-		fmt.Fprintf(&s, "'%s' is answering (%s)...\n", m.playerAnswering.Name, m.answerTimer.View())
+		// Buzzing-in and answering
+		fmt.Fprint(&s, "Players:\n")
+		for i, player := range m.cfg.Players {
+			fmt.Fprintf(&s, "%d. %s", i+1, player.Name)
+			if player == m.playerAnswering {
+				fmt.Fprint(&s, " (answering)\n")
+			} else if _, buzzedIn := m.buzzedIn[player]; buzzedIn {
+				fmt.Fprint(&s, " (buzzed-in)\n")
+			} else {
+				fmt.Fprint(&s, "\n")
+			}
+		}
+		fmt.Fprint(&s, "\n")
+
+		if m.playerAnswering == nil {
+			fmt.Fprint(&s, "Waiting for buzzer...\n")
+		} else if m.answerTimer.Timedout() {
+			fmt.Fprintf(&s, "'%s' is answering (timed out)\n", m.playerAnswering.Name)
+		} else {
+			fmt.Fprintf(&s, "'%s' is answering (%s)...\n", m.playerAnswering.Name, m.answerTimer.View())
+		}
 	}
 
 	fmt.Fprintf(&s, "\n%s\n", m.help.View(m.keymap))
 
-	return tea.NewView(s.String())
+	v := tea.NewView(s.String())
+	v.AltScreen = true
+	return v
 }
