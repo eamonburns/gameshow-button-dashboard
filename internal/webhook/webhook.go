@@ -6,30 +6,37 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/eamonburns/gameshow-button-dashboard/internal/config"
 )
 
 // Intermediate data type for unmarshaling json webhook payload
 type jsonData struct {
-	ButtonId uint `json:"button_id"`
+	ButtonId int `json:"button_id"`
 }
 
 type Data struct {
 	Timestamp time.Time
-	ButtonId  uint
+	ButtonId  int
 }
 
 // Start an HTTP server to listen for webhooks.
 //
 // This function will block indefinitely, so it should be run in a goroutine.
-func StartListening(addr string, webhookId string, webhookCh chan<- Data) {
-	http.Handle("POST /webhook/{id}", Handler{ID: webhookId, Ch: webhookCh})
-	log.Print(http.ListenAndServe(addr, nil))
+func StartListening(addr string, webhookId string, cfg *config.Config, webhookCh chan<- Data) {
+	http.Handle("POST /webhook/{id}", Handler{
+		ID:  webhookId,
+		Cfg: cfg,
+		Ch:  webhookCh,
+	})
+	log.Fatalf("error: %v", http.ListenAndServe(addr, nil))
 }
 
 // http.Handler to listen for webhook requests and send them to a channel
 type Handler struct {
-	ID string
-	Ch chan<- Data
+	ID  string
+	Cfg *config.Config
+	Ch  chan<- Data
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -53,11 +60,22 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "invalid button_id")
 		return
 	}
+	if _, ok := h.Cfg.PlayerForButtonId(jd.ButtonId); !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, "no player with button_id %d\n", jd.ButtonId)
+		return
+	}
 	data := Data{
 		ButtonId: jd.ButtonId,
 	}
 	log.Printf("data: %v\n", data)
 
+	// TODO: Either validate that the player has not already buzzed-in, or try
+	// to send the data to the channel until a timeout (rather than using the
+	// `default` case).
+	// Currently, there is a very small amount of time where player A
+	// buzzes-in, the data is sent, player B buzzes-in and is rejected, and
+	// then player A is found to have already buzzed-in
 	select {
 	case h.Ch <- data:
 		w.WriteHeader(http.StatusOK)

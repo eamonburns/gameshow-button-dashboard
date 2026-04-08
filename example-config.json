@@ -1,0 +1,16 @@
+{
+    "players": [
+        {
+            "name": "Bob",
+            "button_id": 1
+        },
+        {
+            "name": "Frank",
+            "button_id": 2
+        },
+        {
+            "name": "Alice",
+            "button_id": 3
+        }
+    ]
+}

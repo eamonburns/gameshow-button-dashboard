@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 )
 
@@ -59,9 +58,18 @@ func Load(filename string) (*Config, error) {
 	return &cfg, nil
 }
 
-func (sets Config) Format(f fmt.State, verb rune) {
+func (cfg Config) PlayerForButtonId(buttonId int) (*Player, bool) {
+	for _, player := range cfg.Players {
+		if player.ButtonId == buttonId {
+			return player, true
+		}
+	}
+	return nil, false
+}
+
+func (cfg Config) Format(f fmt.State, verb rune) {
 	fmt.Fprint(f, "Config{ Players: [ ")
-	for _, player := range sets.Players {
+	for _, player := range cfg.Players {
 		fmt.Fprintf(f, "%+v ", player)
 	}
 	fmt.Fprint(f, "] }")

@@ -31,10 +31,10 @@ func main() {
 	}
 	webhookCh := make(chan webhook.Data)
 	addr := ":8080"
-	go webhook.StartListening(addr, webhookId, webhookCh)
+	go webhook.StartListening(addr, webhookId, cfg, webhookCh)
 	log.Printf("Started listening for webhooks on %s\n", addr)
 
-	err = tui.Start(webhookCh)
+	err = tui.Start(cfg, webhookCh)
 	if err != nil {
 		log.Fatalf("An error occured while running the TUI: %v\n", err)
 	}
