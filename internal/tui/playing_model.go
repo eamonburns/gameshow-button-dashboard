@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
+	"charm.land/bubbles/v2/timer"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/eamonburns/gameshow-button-dashboard/internal/config"
@@ -18,6 +20,7 @@ type playingModel struct {
 	// The player that is currently answering the question
 	// `nil` if waiting for a player to buzz-in
 	playerAnswering *config.Player
+	answerTimer     timer.Model
 	// Players that have buzzed in are added to this "set"
 	buzzedIn map[*config.Player]struct{}
 }
@@ -49,6 +52,10 @@ func (m playingModel) Init() tea.Cmd {
 
 func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case timer.TickMsg:
+		var cmd tea.Cmd
+		m.answerTimer, cmd = m.answerTimer.Update(msg)
+		return m, cmd
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -101,8 +108,10 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		log.Printf("Player buzzed in: %+v", player)
 		m.playerAnswering = player
+		// TODO: Make timeout configurable (config.Config)
+		m.answerTimer = timer.New(10*time.Second, timer.WithInterval(100*time.Millisecond))
 		m.buzzedIn[player] = struct{}{}
-		return m, nil
+		return m, m.answerTimer.Init()
 	}
 
 	return m, nil
@@ -125,8 +134,10 @@ func (m playingModel) View() tea.View {
 
 	if m.playerAnswering == nil {
 		fmt.Fprint(&s, "Waiting for buzzer...\n")
+	} else if m.answerTimer.Timedout() {
+		fmt.Fprintf(&s, "'%s' is answering (timed out)\n", m.playerAnswering.Name)
 	} else {
-		fmt.Fprintf(&s, "'%s' is answering...\n", m.playerAnswering.Name)
+		fmt.Fprintf(&s, "'%s' is answering (%s)...\n", m.playerAnswering.Name, m.answerTimer.Timeout.String())
 	}
 
 	return tea.NewView(s.String())
