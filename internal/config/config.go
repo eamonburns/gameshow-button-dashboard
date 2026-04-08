@@ -9,7 +9,8 @@ import (
 
 // Static configuration, loaded at the start of the program
 type Config struct {
-	Players []*Player
+	Players              []*Player `json:"players"`
+	AnswerTimeoutSeconds int       `json:"answer_timeout_seconds"`
 }
 
 type Player struct {
@@ -27,6 +28,9 @@ func Load(filename string) (*Config, error) {
 	var cfg Config
 	if err := decoder.Decode(&cfg); err != nil {
 		return nil, err
+	}
+	if cfg.AnswerTimeoutSeconds < 1 {
+		return nil, fmt.Errorf("answer_timeout_seconds is less than 1: %d", cfg.AnswerTimeoutSeconds)
 	}
 	if len(cfg.Players) == 0 {
 		return nil, errors.New("players is empty")

@@ -108,8 +108,10 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		log.Printf("Player buzzed in: %+v", player)
 		m.playerAnswering = player
-		// TODO: Make timeout configurable (config.Config)
-		m.answerTimer = timer.New(10*time.Second, timer.WithInterval(100*time.Millisecond))
+		m.answerTimer = timer.New(
+			time.Duration(m.cfg.AnswerTimeoutSeconds)*time.Second,
+			timer.WithInterval(100*time.Millisecond),
+		)
 		m.buzzedIn[player] = struct{}{}
 		return m, m.answerTimer.Init()
 	}
