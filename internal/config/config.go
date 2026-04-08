@@ -76,5 +76,5 @@ func (cfg Config) Format(f fmt.State, verb rune) {
 	for _, player := range cfg.Players {
 		fmt.Fprintf(f, "%+v ", player)
 	}
-	fmt.Fprint(f, "] }")
+	fmt.Fprintf(f, "] AnswerTimeoutSeconds: %d }", cfg.AnswerTimeoutSeconds)
 }
