@@ -6,12 +6,28 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/timer"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/eamonburns/gameshow-button-dashboard/internal/config"
 	"github.com/eamonburns/gameshow-button-dashboard/internal/webhook"
 )
+
+type playingKeymap struct {
+	Quit            key.Binding
+	CorrectAnswer   key.Binding
+	IncorrectAnswer key.Binding
+}
+
+func (k playingKeymap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Quit, k.CorrectAnswer, k.IncorrectAnswer}
+}
+
+func (k playingKeymap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{k.ShortHelp()}
+}
 
 type playingModel struct {
 	cfg       *config.Config
@@ -23,6 +39,9 @@ type playingModel struct {
 	answerTimer     timer.Model
 	// Players that have buzzed in are added to this "set"
 	buzzedIn map[*config.Player]struct{}
+
+	keymap playingKeymap
+	help   help.Model
 }
 
 // Create a new playingModel and also a tea.Cmd to wait for buzzer presses
@@ -31,6 +50,23 @@ func newPlayingModel(cfg *config.Config, webhookCh <-chan webhook.Data) (playing
 		cfg:       cfg,
 		webhookCh: webhookCh,
 		buzzedIn:  make(map[*config.Player]struct{}),
+		keymap: playingKeymap{
+			Quit: key.NewBinding(
+				key.WithKeys("q", "ctrl+c"),
+				key.WithHelp("q", "quit"),
+			),
+			CorrectAnswer: key.NewBinding(
+				key.WithKeys("enter"),
+				key.WithHelp("enter", "accept answer"),
+				key.WithDisabled(), // Will be enabled when a player has buzzed in
+			),
+			IncorrectAnswer: key.NewBinding(
+				key.WithKeys("backspace"),
+				key.WithHelp("backspace", "reject answer"),
+				key.WithDisabled(), // Will be enabled when a player has buzzed in
+			),
+		},
+		help: help.New(),
 	}
 	return m, m.waitForBuzzer()
 }
@@ -56,12 +92,18 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.answerTimer, cmd = m.answerTimer.Update(msg)
 		return m, cmd
+
+	case tea.WindowSizeMsg:
+		m.help.SetWidth(msg.Width)
+
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
+		switch {
+		case key.Matches(msg, m.keymap.Quit):
 			return m, tea.Quit
-		case "enter":
+
+		case key.Matches(msg, m.keymap.CorrectAnswer):
 			if m.playerAnswering == nil {
+				log.Printf("error: this 'CorrectAnswer' keymap matched while player isn't buzzed-in")
 				break
 			}
 
@@ -71,8 +113,10 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cfg:       m.cfg,
 				webhookCh: m.webhookCh,
 			}, nil
-		case "backspace":
+
+		case key.Matches(msg, m.keymap.IncorrectAnswer):
 			if m.playerAnswering == nil {
+				log.Printf("error: this 'IncorrectAnswer' keymap matched while player isn't buzzed-in")
 				break
 			}
 
@@ -93,9 +137,12 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				log.Println("Some players have not buzzed in yet")
 				m.playerAnswering = nil
+				m.keymap.CorrectAnswer.SetEnabled(false)
+				m.keymap.IncorrectAnswer.SetEnabled(false)
 				return m, m.waitForBuzzer()
 			}
 		}
+
 	case webhook.Data:
 		player, ok := m.cfg.PlayerForButtonId(msg.ButtonId)
 		if !ok {
@@ -113,6 +160,8 @@ func (m playingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			timer.WithInterval(100*time.Millisecond),
 		)
 		m.buzzedIn[player] = struct{}{}
+		m.keymap.CorrectAnswer.SetEnabled(true)
+		m.keymap.IncorrectAnswer.SetEnabled(true)
 		return m, m.answerTimer.Init()
 	}
 
@@ -139,8 +188,10 @@ func (m playingModel) View() tea.View {
 	} else if m.answerTimer.Timedout() {
 		fmt.Fprintf(&s, "'%s' is answering (timed out)\n", m.playerAnswering.Name)
 	} else {
-		fmt.Fprintf(&s, "'%s' is answering (%s)...\n", m.playerAnswering.Name, m.answerTimer.Timeout.String())
+		fmt.Fprintf(&s, "'%s' is answering (%s)...\n", m.playerAnswering.Name, m.answerTimer.View())
 	}
+
+	fmt.Fprintf(&s, "\n%s\n", m.help.View(m.keymap))
 
 	return tea.NewView(s.String())
 }
