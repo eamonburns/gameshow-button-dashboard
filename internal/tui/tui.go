@@ -34,6 +34,17 @@ func initialModel(cfg *config.Config, webhookCh <-chan webhook.Data) model {
 				key.WithHelp("backspace", "reject answer"),
 				key.WithDisabled(), // Will be enabled when a player has buzzed in
 			),
+			BuzzIn: key.NewBinding(
+				// NOTE: I might want to change this to use the actual button IDs of the players
+				key.WithKeys("1", "2", "3", "4", "5", "6", "7", "8", "9"),
+				key.WithHelp("1-9", "buzz-in"),
+				key.WithDisabled(), // Will be enabled when waiting for buzzer
+			),
+			StartReading: key.NewBinding(
+				key.WithKeys("esc"),
+				key.WithHelp("esc", "back to reading"),
+				key.WithDisabled(), // Will be enabled when not reading
+			),
 		},
 		help: help.New(),
 	}

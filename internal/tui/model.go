@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,10 +22,12 @@ type keymap struct {
 	FinishReading   key.Binding
 	CorrectAnswer   key.Binding
 	IncorrectAnswer key.Binding
+	BuzzIn          key.Binding
+	StartReading    key.Binding
 }
 
 func (k keymap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Quit, k.FinishReading, k.CorrectAnswer, k.IncorrectAnswer}
+	return []key.Binding{k.Quit, k.FinishReading, k.CorrectAnswer, k.IncorrectAnswer, k.BuzzIn, k.StartReading}
 }
 
 func (k keymap) FullHelp() [][]key.Binding {
@@ -31,8 +35,9 @@ func (k keymap) FullHelp() [][]key.Binding {
 }
 
 type model struct {
-	cfg       *config.Config
-	webhookCh <-chan webhook.Data
+	cfg         *config.Config
+	webhookCh   <-chan webhook.Data
+	stopWaiting context.CancelFunc
 
 	reading bool
 
@@ -47,29 +52,56 @@ type model struct {
 	help   help.Model
 }
 
+func (m model) transitionStartReading() (tea.Model, tea.Cmd) {
+	log.Print("transitionStartReading")
+	m.reading = true
+	m.keymap.FinishReading.SetEnabled(true)
+	m.keymap.CorrectAnswer.SetEnabled(false)
+	m.keymap.IncorrectAnswer.SetEnabled(false)
+	m.keymap.BuzzIn.SetEnabled(false)
+	m.keymap.StartReading.SetEnabled(false)
+	return m, nil
+}
+
 // Create a Cmd that will send a Msg of type webhook.Data after the webserver
 // receives a buzzer webhook request, and a new Model that is ready to recieve
 // the webhook.Data message
-func (m model) waitForBuzzer() (tea.Model, tea.Cmd) {
+func (m model) transitionWaitForBuzzer() (tea.Model, tea.Cmd) {
+	log.Print("transitionWaitForBuzzer")
+	ctx, stopWaiting := context.WithCancel(context.Background())
+	m.stopWaiting = stopWaiting
 	m.reading = false
 	m.playerAnswering = nil
 	m.keymap.FinishReading.SetEnabled(false)
 	m.keymap.CorrectAnswer.SetEnabled(false)
 	m.keymap.IncorrectAnswer.SetEnabled(false)
+	m.keymap.BuzzIn.SetEnabled(true)
+	m.keymap.StartReading.SetEnabled(true)
 	return m, func() tea.Msg {
-		log.Println("waiting for buzzer...")
-		data := <-m.webhookCh
-		log.Println("got webhook data")
-		return data
+		log.Println("(waiting Cmd) waiting for buzzer...")
+		select {
+		case data := <-m.webhookCh:
+			log.Printf("(waiting Cmd) got webhook data: %+v", data)
+			return data
+		case <-ctx.Done():
+			log.Printf("(waiting Cmd) stopped waiting: %v", ctx.Err())
+			return nil
+		}
 	}
 }
 
-func (m model) startReading() (tea.Model, tea.Cmd) {
-	m.reading = true
-	m.keymap.FinishReading.SetEnabled(true)
-	m.keymap.CorrectAnswer.SetEnabled(false)
-	m.keymap.IncorrectAnswer.SetEnabled(false)
-	return m, nil
+func (m model) transitionBuzzIn(player *config.Player) (tea.Model, tea.Cmd) {
+	log.Print("transitionBuzzIn")
+	m.playerAnswering = player
+	m.answerTimer = timer.New(
+		time.Duration(m.cfg.AnswerTimeoutSeconds)*time.Second,
+		timer.WithInterval(100*time.Millisecond),
+	)
+	m.buzzedIn[player] = struct{}{}
+	m.keymap.CorrectAnswer.SetEnabled(true)
+	m.keymap.IncorrectAnswer.SetEnabled(true)
+	m.keymap.BuzzIn.SetEnabled(false)
+	return m, m.answerTimer.Init()
 }
 
 func (m model) Init() tea.Cmd {
@@ -93,22 +125,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keymap.FinishReading):
 			m.buzzedIn = make(map[*config.Player]struct{}, len(m.cfg.Players))
-			return m.waitForBuzzer()
+			return m.transitionWaitForBuzzer()
 
 		case key.Matches(msg, m.keymap.CorrectAnswer):
 			if m.playerAnswering == nil {
-				log.Printf("error: this 'CorrectAnswer' keymap matched while player isn't buzzed-in")
-				break
+				log.Fatal("error: 'CorrectAnswer' keymap matched while player isn't buzzed-in")
 			}
 
 			// Answer was correct, go back to reading a clue
 			log.Printf("'%s' answered correctly", m.playerAnswering.Name)
-			return m.startReading()
+			return m.transitionStartReading()
 
 		case key.Matches(msg, m.keymap.IncorrectAnswer):
 			if m.playerAnswering == nil {
-				log.Printf("error: this 'IncorrectAnswer' keymap matched while player isn't buzzed-in")
-				break
+				log.Fatal("error: 'IncorrectAnswer' keymap matched while player isn't buzzed-in")
 			}
 
 			log.Printf("'%s' answered incorrectly", m.playerAnswering.Name)
@@ -121,21 +151,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if allBuzzedIn {
 				log.Println("All players answered incorrectly")
-				return m.startReading()
+				return m.transitionStartReading()
 			} else {
-				// FIXME: There is a possibility that the last player could
-				// just answer the question without buzzing in, because they
-				// don't have anyone to race for the answer. There isn't
-				// currently a way to override the behavior of having to
-				// buzz-in before being able to move on, so in that case they
-				// would have to buzz-in after already answering the question
-				// and the host would have to accept/reject their answer
 				log.Println("Some players have not buzzed in yet")
-				return m.waitForBuzzer()
+				return m.transitionWaitForBuzzer()
 			}
+
+		case key.Matches(msg, m.keymap.BuzzIn):
+			if m.playerAnswering != nil {
+				log.Fatal("error: buzz-in while there is already a player answering")
+			}
+			buttonId, err := strconv.Atoi(msg.String())
+			if err != nil {
+				log.Fatalf("error: unable to convert buzzer number to int: %v", err)
+			}
+			player, ok := m.cfg.PlayerForButtonId(buttonId)
+			if !ok {
+				log.Printf("received manual buzz-in with invalid ButtonId: %d", buttonId)
+				return m, nil
+			}
+			if _, buzzedIn := m.buzzedIn[player]; buzzedIn {
+				log.Printf("player has already buzzed in: %+v", player)
+				return m.transitionWaitForBuzzer()
+			}
+			log.Printf("Buzzed in manually: %+v", player)
+			m.stopWaiting()
+			m.stopWaiting = nil
+			return m.transitionBuzzIn(player)
+		case key.Matches(msg, m.keymap.StartReading):
+			if m.stopWaiting != nil {
+				m.stopWaiting()
+				m.stopWaiting = nil
+			}
+			log.Printf("Going back to reading")
+			return m.transitionStartReading()
 		}
 
 	case webhook.Data:
+		if m.playerAnswering != nil {
+			log.Fatal("error: buzz-in while there is already a player answering")
+		}
 		player, ok := m.cfg.PlayerForButtonId(msg.ButtonId)
 		if !ok {
 			log.Printf("error: received webhook.Data message with invalid ButtonId: %d", msg.ButtonId)
@@ -143,18 +198,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if _, buzzedIn := m.buzzedIn[player]; buzzedIn {
 			log.Printf("player has already buzzed in: %+v", player)
-			return m.waitForBuzzer()
+			return m.transitionWaitForBuzzer()
 		}
 		log.Printf("Player buzzed in: %+v", player)
-		m.playerAnswering = player
-		m.answerTimer = timer.New(
-			time.Duration(m.cfg.AnswerTimeoutSeconds)*time.Second,
-			timer.WithInterval(100*time.Millisecond),
-		)
-		m.buzzedIn[player] = struct{}{}
-		m.keymap.CorrectAnswer.SetEnabled(true)
-		m.keymap.IncorrectAnswer.SetEnabled(true)
-		return m, m.answerTimer.Init()
+		return m.transitionBuzzIn(player)
 	}
 
 	return m, nil
